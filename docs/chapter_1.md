@@ -70,7 +70,7 @@ iex> Sender.notify_all(emails)
 
 It took four calls to send_email/1 and about twelve seconds to complete.
 
-### Startnig Processes
+### Starting Processes
 The Task module contains a number of very useful functions for running code asynchronously and concurrently. One of them is start/1.
 
 ```sh

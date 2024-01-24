@@ -1,4 +1,4 @@
-defmodule Jobber.Application do
+defmodule Scraper.Application do
   # See https://hexdocs.pm/elixir/Application.html
   # for more information on OTP Applications
   @moduledoc false
@@ -7,19 +7,15 @@ defmodule Jobber.Application do
 
   @impl true
   def start(_type, _args) do
-    job_runner_config = [
-      strategy: :one_for_one,
-      max_seconds: 30,
-      name: Jobber.JobRunner
-    ]
     children = [
-      {Registry, keys: :unique, name: Jobber.JobRegistry},
-      {DynamicSupervisor, job_runner_config}
+      PageProducer,
+      Supervisor.child_spec({PageConsumer, [name: :consumer_a]}, id: :consumer_a),
+      Supervisor.child_spec({PageConsumer, [name: :consumer_b]}, id: :consumer_b)
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: Jobber.Supervisor]
+    opts = [strategy: :one_for_one, name: Scraper.Supervisor]
     Supervisor.start_link(children, opts)
   end
 end

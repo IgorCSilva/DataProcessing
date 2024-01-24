@@ -1,17 +1,31 @@
 defmodule Jobber.Job do
-  use GenServer
+  use GenServer, restart: :transient
   require Logger
 
   defstruct [:work, :id, :max_retries, retries: 0, status: "new"]
 
   def init(args) do
     work = Keyword.fetch!(args, :work)
-    id = Keyword.get(args, :id, random_job_id())
+    id = Keyword.get(args, :id)
     max_retries = Keyword.get(args, :max_retries, 3)
 
     state = %Jobber.Job{id: id, work: work, max_retries: max_retries}
 
     {:ok, state, {:continue, :run}}
+  end
+
+  def start_link(args) do
+    args =
+      if Keyword.has_key?(args, :id) do
+        args
+      else
+        Keyword.put(args, :id, random_job_id())
+      end
+
+    id = Keyword.get(args, :id)
+    type = Keyword.get(args, :type)
+
+    GenServer.start_link(__MODULE__, args, name: via(id, type))
   end
 
   defp random_job_id() do
@@ -55,5 +69,9 @@ defmodule Jobber.Job do
   def handle_info(:retry, state) do
     # Delegate work to the `handle_continue/2` callback.
     {:noreply, state, {:continue, :run}}
+  end
+
+  defp via(key, value) do
+    {:via, Registry, {Jobber.JobRegistry, key, value}}
   end
 end
