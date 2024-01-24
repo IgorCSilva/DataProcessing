@@ -9,7 +9,7 @@ defmodule PageProducer do
 
   def init(initial_state) do
     Logger.info("PageProducer init")
-    {:producer, initial_state, buffer_size: 1, buffer_keep: :first}
+    {:producer, initial_state}
   end
 
   def handle_demand(demand, state) do
