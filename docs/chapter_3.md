@@ -298,12 +298,12 @@ If you want to use a fixed-size buffer, you also have the option to discard even
 Rerun the application.
 ```sh
 iex(1)> pages = [      
-...(1)>   "google.com",  
-...(1)>   "facebook.com",
-...(1)>   "apple.com",   
-...(1)>   "netflix.com", 
-...(1)>   "amazon.com"   
-...(1)> ]
+   "google.com",  
+   "facebook.com",
+   "apple.com",   
+   "netflix.com", 
+   "amazon.com"   
+ ]
 ["google.com", "facebook.com", "apple.com", "netflix.com", "amazon.com"]
 iex(2)> PageProducer.scrape_pages(pages)
 
@@ -324,3 +324,121 @@ iex(3)>
 Using the built-in buffer is convenient for most use cases. If you need fine-grain control over the number of events produced and dispatched, you may want to look into implementing your own queue for storing produced events and pending demand. Erlang’s :queue is a great option as it is already available in Elixir. Such a queue could be stored in producer’s state, and used to dispatch events only when demand has been registered in handle_demand/3 . This will also give you an opportunity to implement your custom logic for discarding events— useful if you want to prioritize one type of event over another.
 
 ## Adding Concurrency with ConsumerSupervisor
+
+### Creating a ConsumerSupervisor
+- in scraper/lib/page_consumer_supervisor.ex:
+```elixir
+defmodule PageConsumerSupervisor do
+  use ConsumerSupervisor
+  require Logger
+
+  def start_link(_args) do
+    ConsumerSupervisor.start_link(__MODULE__, :ok)
+  end
+
+  def init(:ok) do
+    Logger.info("PageConsumerSupervisor init")
+
+    # The only restart options supported are :temporary and :transient .
+    children = [
+      %{
+        id: PageConsumer,
+        start: {PageConsumer, :start_link, []},
+        restart: :transient
+      }
+    ]
+
+    opts = [
+      strategy: :one_for_one,
+      subscribe_to: [
+        {PageProducer, max_demand: 2}
+      ]
+    ]
+
+    ConsumerSupervisor.init(children, opts)
+  end
+end
+```
+
+State is not relevant for ConsumerSupervisor , so we simply pass an :ok atom.
+max_demand defined with 2 means that two consumers (at most) could run concurrently.
+
+### The Simplified Consumer
+Refactor PageConsumer.
+- in scraper/lib/page_consumer.ex:
+```elixir
+defmodule PageConsumer do
+  require Logger
+
+  def start_link(event) do
+    Logger.info("PageConsumer received #{event}")
+
+    Task.start_link(fn ->
+      Scraper.work()
+    end)
+  end
+end
+```
+
+Remember that we told PageConsumerSupervisor to subscribe to PageProducer for events. This means that PageConsumerSupervisor has effectively taken the place of a :consumer in our data-processing pipeline. However, PageConsumerSupervisor only manages demand, receives events, and starts new processes. It doesn’t do any work.
+
+### Put It All Together
+- in scraper/lib/scraper/application.ex:
+```elixir
+    children = [
+      PageProducer,
+      PageConsumerSupervisor
+    ]
+```
+
+Remember to remove the buffer update.
+- in scraper/lib/page_producer.ex:
+```elixir
+  def init(initial_state) do
+    Logger.info("PageProducer init")
+    {:producer, initial_state}
+  end
+```
+
+Let’s rerun our application and call PageProducer.scrape_pages/1 in the IEx shell.
+
+```sh
+iex(1)> pages = [      
+  "google.com",  
+  "facebook.com",
+  "apple.com",   
+  "netflix.com", 
+  "amazon.com"   
+]
+["google.com", "facebook.com", "apple.com", "netflix.com", "amazon.com"]
+iex(2)> PageProducer.scrape_pages(pages)
+:ok
+iex(3)> 
+19:28:21.424 [info] PageConsumer received google.com
+ 
+19:28:21.424 [info] PageConsumer received facebook.com
+ 
+19:28:24.432 [info] PageConsumer received apple.com
+ 
+19:28:26.432 [info] PageConsumer received netflix.com
+ 
+19:28:27.433 [info] PageConsumer received amazon.com
+ 
+19:28:28.434 [info] PageProducer received demand for 1 pages
+ 
+19:28:30.435 [info] PageProducer received demand for 1 pages
+```
+
+- How To Find Out the Number of Logical Cores at Runtime?
+
+In Elixir, you can get the number of logical cores available programmatically by calling System.schedulers_online(). This could be useful if you want to set ConsumerSupervisor ’s max_demand dynamically, for example:
+
+max_demand = System.schedulers_online() * 2
+
+My personal laptop has a CPU with four logical cores, so max_demand will be eight using the formula above.
+
+
+
+Keep in mind that all child processes must exit with reason :normal or :shutdown , so the supervisor can reissue demand. You can do this by returning {:stop, :normal, state} from a process callback when you’re ready to terminate it.
+
+## Creating Multi-Stage Data Pipelines
