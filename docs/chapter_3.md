@@ -202,16 +202,20 @@ You will see:
 
 Since our handle_demand/2 callback does not return events, this initial demand is not satisfied and therefore the consumer will wait until events are available.
 
+
+- in scraper/.iex.exs:
+```elixir
+pages = [
+  "google.com",
+  "facebook.com",
+  "apple.com",
+  "netflix.com",
+  "amazon.com"
+]
+```
+
 Run:
 ```sh
-iex(2)> pages = [      
-  "google.com",  
-  "facebook.com",
-  "apple.com",   
-  "netflix.com", 
-  "amazon.com"   
-]
-["google.com", "facebook.com", "apple.com", "netflix.com", "amazon.com"]
 iex(3)> PageProducer.scrape_pages(pages)
 :ok
 iex(4)> 
@@ -442,3 +446,248 @@ My personal laptop has a CPU with four logical cores, so max_demand will be eigh
 Keep in mind that all child processes must exit with reason :normal or :shutdown , so the supervisor can reissue demand. You can do this by returning {:stop, :normal, state} from a process callback when you’re ready to terminate it.
 
 ## Creating Multi-Stage Data Pipelines
+
+- in scraper/lib/scraper.ex:
+```elixir
+  def online?(_url) do
+    # Pretend we are checking if the
+    # service is online or not.
+    work()
+    
+    # Select result randomly.
+    Enum.random([false, true, true])
+  end
+```
+
+### Adding a Producer-Consumer
+- in scraper/lib/online_page_producer_consumer.ex:
+```elixir
+defmodule OnlinePageProducerConsumer do
+  use GenStage
+  require Logger
+
+  def start_link(_args) do
+    initial_state = []
+    GenStage.start_link(__MODULE__, initial_state, name: __MODULE__)
+  end
+
+  def init(initial_state) do
+    Logger.info("OnlinePageProducerConsumer init")
+
+    subscription = [
+      {PageProducer, min_demand: 0, max_demand: 1}
+    ]
+
+    {:producer_consumer, initial_state, subscribe_to: subscription}
+  end
+
+  def handle_events(events, _from, state) do
+    Logger.info("OnlinePageProducerConsumer received #{inspect(events)}")
+
+    events = Enum.filter(events, &Scraper.online?/1)
+    {:noreply, events, state}
+  end
+end
+```
+
+### Rewriting Our Pipeline
+
+- in scraper/lib/page_consumer_supervisor.ex:
+```elixir
+    opts = [
+      strategy: :one_for_one,
+      subscribe_to: [
+        {OnlinePageProducerConsumer, max_demand: 2}
+      ]
+    ]
+```
+
+- in scraper/lib/scraper/application.ex:
+```elixir
+    children = [
+      PageProducer,
+      OnlinePageProducerConsumer,
+      PageConsumerSupervisor
+    ]
+```
+
+Producers always have to be started before the consumers.
+
+Test:
+```sh
+iex(1)> PageProducer.scrape_pages(pages)
+:ok
+
+19:17:22.814 [info] OnlinePageProducerConsumer received ["google.com"]
+iex(2)> 
+19:17:25.823 [info] OnlinePageProducerConsumer received ["facebook.com"]
+ 
+19:17:27.824 [info] OnlinePageProducerConsumer received ["apple.com"]
+ 
+19:17:27.825 [info] PageConsumer received facebook.com
+ 
+19:17:28.825 [info] OnlinePageProducerConsumer received ["netflix.com"]
+ 
+19:17:29.825 [info] PageConsumer received netflix.com
+ 
+19:17:29.826 [info] OnlinePageProducerConsumer received ["amazon.com"]
+ 
+19:17:34.827 [info] PageConsumer received amazon.com
+ 
+19:17:34.827 [info] PageProducer received demand for 1 pages
+```
+
+### Scaling Up a Stage with Extra Processes
+
+- in scraper/lib/scraper/application.ex:
+```elixir
+def start(_type, _args) do
+    children = [
+      {Registry, keys: :unique, name: ProducerConsumerRegistry},
+      PageProducer,
+      producer_consumer_spec(id: 1),
+      producer_consumer_spec(id: 2),
+      PageConsumerSupervisor
+    ]
+
+    # See https://hexdocs.pm/elixir/Supervisor.html
+    # for other strategies and supported options
+    opts = [strategy: :one_for_one, name: Scraper.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+  
+  def producer_consumer_spec(id: id) do
+    id = "online_page_producer_consumer_#{id}"
+    Supervisor.child_spec({OnlinePageProducerConsumer, id}, id: id)
+  end
+```
+
+- in scraper/lib/online_page_producer_consumer.ex:
+```elixir
+  def start_link(id) do
+    initial_state = []
+    GenStage.start_link(__MODULE__, initial_state, name: via(id))
+  end
+  
+  def via(id) do
+    {:via, Registry, {ProducerConsumerRegistry, id}}
+  end
+```
+
+We use the ProducerConsumerRegistry we created earlier to store a reference to our process.
+
+- in scraper/lib/page_consumer_supervisor.ex:
+```elixir
+    opts = [
+      strategy: :one_for_one,
+      subscribe_to: [
+        {OnlinePageProducerConsumer.via("online_page_producer_consumer_1"), []},
+        {OnlinePageProducerConsumer.via("online_page_producer_consumer_2"), []}
+      ]
+    ]
+```
+
+Test:
+```sh
+iex(1)> PageProducer.scrape_pages(pages)
+:ok
+iex(2)> 
+19:30:04.723 [info] OnlinePageProducerConsumer received ["google.com"]
+ 
+19:30:04.723 [info] OnlinePageProducerConsumer received ["facebook.com"]
+ 
+19:30:05.731 [info] OnlinePageProducerConsumer received ["apple.com"]
+ 
+19:30:05.732 [info] PageConsumer received google.com
+ 
+19:30:09.731 [info] PageConsumer received facebook.com
+ 
+19:30:09.731 [info] OnlinePageProducerConsumer received ["netflix.com"]
+ 
+19:30:09.733 [info] OnlinePageProducerConsumer received ["amazon.com"]
+ 
+19:30:10.732 [info] PageConsumer received netflix.com
+ 
+19:30:10.732 [info] PageProducer received demand for 1 pages
+ 
+19:30:13.734 [info] PageProducer received demand for 1 pages
+ 
+19:30:13.734 [info] PageConsumer received amazon.com
+```
+
+## Choosing the Right Dispatcher
+
+When :producer and :producer_consumer stages send events to consumers, it’s in fact the dispatcher that takes care of sending the events. So far we have used the default DemandDispatcher , but GenStage comes with two more.
+
+The default is DemandDispatcher , which is equivalent to this
+configuration:
+
+```elixir
+def init(state) do
+  {:producer, state, dispatcher: GenStage.DemandDispatcher}
+end
+```
+
+DemandDispatcher sends events to consumers with the highest demand first. It is the dispatcher that you’re going to use most often.
+
+### Using BroadcastDispatcher
+You can use the BroadcastDispatcher this way:
+
+{:producer, state, dispatcher: GenStage.BroadcastDispatcher}
+
+As its name suggests, BroadcastDispatcher sends the events supplied by the :producer or :producer_consumer to all consumers subscribed to it.
+
+When BroadcastDispatcher is used, consumer stages get the ability to filter the events they are receiving. This means that each consumer can opt-in for specific events, and discard the rest. All you have to do is use the :selector setting when subscribing to the producer, like so:
+
+```elixir
+def init(state) do
+  selector =
+    fn incoming_event ->
+      # you can use the event to decide whether
+      # to return `true` and accept it, or `false` to reject it.
+    end
+    
+  sub_opts = [
+    {SomeProducer, selector: selector}
+  ]
+  
+  {:consumer, state, subscribe_to: sub_opts}
+end
+```
+
+### Using PartitionDispatcher
+
+Unlike BroadcastDispatcher , where the consumer has to check each event, PartitionDispatcher leaves this responsibility to the producer.
+
+There are two extra arguments that we need to pass when configuring PartitionDispatcher — :partitions and :hash . Here is an example:
+
+```elixir
+def init(state) do
+  hash =
+    fn event ->
+      # you can use the event to decide which partition
+      # to assign it to, or use `:none` to ignore it.
+
+      event, :c}
+    end
+
+  opts = [
+    partitions: [:a, :b, :c],
+    hash: hash
+  ]
+
+  {:producer, state, dispatcher: {GenStage.ParitionDispatcher, opts}}
+end
+```
+
+Now that the producer is configured, consumers can subscribe to one of the partitions when initializing:
+
+```elixir
+sub_opts = [
+  {SomeProducer, partition: :b}
+]
+
+{:consumer, state, subscribe_to: sub_opts}
+```
+
+However, if these dispatchers still don’t quite match what you are trying to accomplish, you can also create your own dispatcher from scratch, by implementing the GenStage.Dispatcher behaviour. Check out the Dispatcher module documentation for more information on what callbacks you have to implement.
