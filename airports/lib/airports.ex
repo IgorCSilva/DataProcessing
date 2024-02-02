@@ -7,8 +7,15 @@ defmodule Airports do
   end
 
   def open_airports() do
+
+    window = Flow.Window.trigger_every(Flow.Window.global(), 1000)
+
     airports_csv()
     |> File.stream!()
+    |> Stream.map(fn event ->
+      Process.sleep(Enum.random([0, 0, 0, 1]))
+      event
+    end)
     |> Flow.from_enumerable()
     |> Flow.map(fn row ->
       [row] = CSV.parse_string(row, skip_headers: false)
@@ -21,13 +28,24 @@ defmodule Airports do
       }
     end)
     |> Flow.reject(&(&1.type == "closed"))
-    |> Flow.partition(key: {:key, :country})
+    |> Flow.partition(window: window, key: {:key, :country})
     |> Flow.group_by(&(&1.country))
-    |> Flow.on_trigger(fn data ->
-      {Enum.map(data, fn {country, data} -> {country, Enum.count(data)} end), data}
+    |> Flow.on_trigger(fn acc, _partition_info, {_type, _id, trigger} ->
+
+      # Show progress in IEx, or use the data for something else.
+      events =
+        acc
+        |> Enum.map(fn {country, data} -> {country, Enum.count(data)} end)
+        |> IO.inspect(label: inspect(self()))
+
+      case trigger do
+        :done ->
+          {events, acc}
+        {:every, 1000} ->
+          {[], acc}
+      end
     end)
-    |> Flow.take_sort(10, fn {_, a}, {_, b} -> a > b end)
-    |> Enum.to_list()
-    |> List.flatten()
+    |> Enum.sort(fn {_, a}, {_, b} -> a > b end)
+    |> Enum.take(10)
   end
 end
