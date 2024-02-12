@@ -1,0 +1,6 @@
+2024-02-09 07:04:57 =SUPERVISOR REPORT====
+     Supervisor: {<0.415.0>,amqp_channel_sup_sup}
+     Context:    shutdown_error
+     Reason:     noproc
+     Offender:   [{nb_children,1},{id,channel_sup},{mfargs,{amqp_channel_sup,start_link,[network,<0.403.0>,<<"client 127.0.0.1:60689 -> 127.0.0.1:5672">>]}},{restart_type,temporary},{shutdown,infinity},{child_type,supervisor}]
+

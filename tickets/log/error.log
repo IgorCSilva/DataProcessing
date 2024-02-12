@@ -1,0 +1,1 @@
+2024-02-09 07:04:57.155 [error] <0.415.0> Supervisor {<0.415.0>,amqp_channel_sup_sup} had child channel_sup started with amqp_channel_sup:start_link(network, <0.403.0>, <<"client 127.0.0.1:60689 -> 127.0.0.1:5672">>) at undefined exit with reason noproc in context shutdown_error
